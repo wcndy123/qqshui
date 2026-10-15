@@ -47,10 +47,19 @@ export default function ConfigPanel({ config, setConfig }: Props) {
       // GET /api/v1/player-search?type=NAME&query={query}&limit=20
       const mockResults: PlayerSearchResult[] = []
 
+      // 生成模拟UUID
+      const generateUUID = () => {
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+          const r = Math.random() * 16 | 0
+          const v = c === 'x' ? r : (r & 0x3 | 0x8)
+          return v.toString(16)
+        })
+      }
+
       if (isNumeric(query)) {
         // 纯数字 → 同时搜索短ID和昵称
         mockResults.push({
-          playerId: 'mock-' + Date.now(),
+          playerId: generateUUID(),
           shortId: query,
           displayName: `玩家${query}`,
           avatarKey: 'player.avatar.male.default',
@@ -60,7 +69,7 @@ export default function ConfigPanel({ config, setConfig }: Props) {
       } else {
         // 包含文字 → 只搜索昵称
         mockResults.push({
-          playerId: 'mock-' + Date.now(),
+          playerId: generateUUID(),
           shortId: String(Math.floor(Math.random() * 900000) + 100000),
           displayName: query,
           avatarKey: 'player.avatar.male.default',
@@ -420,6 +429,18 @@ export default function ConfigPanel({ config, setConfig }: Props) {
                       <span className="text-xs text-slate-500 font-mono truncate">
                         {friend.playerId.substring(0, 8)}...
                       </span>
+                      {/* UUID解析状态标识 */}
+                      {friend.playerId.length > 20 ? (
+                        <span className="text-xs text-green-400/70 flex items-center gap-0.5" title="UUID已解析，可直接使用">
+                          <i className="fa-solid fa-check-circle text-[10px]" />
+                          已解析
+                        </span>
+                      ) : (
+                        <span className="text-xs text-amber-400/70 flex items-center gap-0.5" title="运行时将通过API解析为UUID">
+                          <i className="fa-solid fa-clock text-[10px]" />
+                          待解析
+                        </span>
+                      )}
                     </div>
                   </div>
                   {/* Remove Button */}
