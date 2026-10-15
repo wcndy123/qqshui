@@ -141,7 +141,13 @@ export default function App() {
     return null
   }
 
-  // 模拟巡查酒馆
+  // 模拟巡查酒馆 - 使用缓存保持一致性
+  const tavernDataCache = useRef<Map<string, {
+    candidates: TavernCandidate[]
+    protectionEndsAt: string
+    createdAt: number
+  }>>(new Map())
+
   const simulateTavernInspect = async (friend: FriendInfo): Promise<{
     candidates: TavernCandidate[]
     protectionEndsAt: string
@@ -151,20 +157,39 @@ export default function App() {
     addLog(`[HTTP] GET ${url}`, 'info')
     const latency = await simulateRequest('巡查')
 
-    // 模拟返回
+    const now = Date.now() + serverOffset
+    const cacheKey = friend.playerId
+    const cached = tavernDataCache.current.get(cacheKey)
+
+    // 如果有缓存且保护期还没过，返回缓存数据
+    if (cached && new Date(cached.protectionEndsAt).getTime() > now) {
+      const serverTime = new Date(now).toISOString()
+      addLog(`[RESP] 200 OK (${latency.toFixed(0)}ms)`, 'info')
+      addLog(`[DATA] serverTime=${serverTime}`, 'info')
+      addLog(`[DATA] protectionEndsAt=${cached.protectionEndsAt}`, 'info')
+      addLog(`[DATA] 候选武将数量: ${cached.candidates.length}`, 'info')
+      
+      const newOffset = now - Date.now()
+      setServerOffset(newOffset)
+      
+      return { candidates: cached.candidates, protectionEndsAt: cached.protectionEndsAt, serverTime }
+    }
+
+    // 否则生成新数据
     const numHeroes = Math.floor(Math.random() * 3) + 1
     const candidates = Array.from({ length: numHeroes }, () => randomHero())
-    const now = Date.now() + serverOffset
-    const protectionDuration = Math.floor(Math.random() * 30 * 60 * 1000) // 0-30分钟
+    const protectionDuration = Math.floor(Math.random() * 15 * 60 * 1000) + 5 * 60 * 1000 // 5-20分钟
     const protectionEndsAt = new Date(now + protectionDuration).toISOString()
     const serverTime = new Date(now).toISOString()
+
+    // 缓存数据
+    tavernDataCache.current.set(cacheKey, { candidates, protectionEndsAt, createdAt: now })
 
     addLog(`[RESP] 200 OK (${latency.toFixed(0)}ms)`, 'info')
     addLog(`[DATA] serverTime=${serverTime}`, 'info')
     addLog(`[DATA] protectionEndsAt=${protectionEndsAt}`, 'info')
     addLog(`[DATA] 候选武将数量: ${candidates.length}`, 'info')
 
-    // 更新服务器时间偏移
     const newOffset = now - Date.now()
     setServerOffset(newOffset)
 
