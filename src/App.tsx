@@ -14,7 +14,7 @@ const DEFAULT_CONFIG: Config = {
   serverId: 'recharge-s1',
   targetQualities: ['PURPLE', 'ORANGE'],
   intervalSeconds: 60,
-  friendIds: [],
+  friends: [],
   accessToken: '',
 }
 
@@ -58,7 +58,12 @@ export default function App() {
       setCurrentStep('friends')
 
       setTimeout(() => {
-        const friends = config.friendIds.length > 0 ? config.friendIds : ['未配置好友ID']
+        const friends = config.friends.length > 0 ? config.friends : []
+        if (friends.length === 0) {
+          addLog('❌ 未配置好友！请先在配置面板搜索并添加好友', 'error')
+          setCurrentStep('idle')
+          return
+        }
         addLog(`📋 共 ${friends.length} 个好友待巡查`, 'info')
         setCurrentStep('patrol')
 
@@ -70,15 +75,15 @@ export default function App() {
             return
           }
 
-          const fid = friends[friendIndex]
-          addLog(`🔍 巡查好友 [${fid.substring(0, 8)}...] 的酒馆...`, 'info')
+          const friend = friends[friendIndex]
+          addLog(`🔍 巡查好友【${friend.displayName}】(ID:${friend.shortId}) 的酒馆...`, 'info')
 
           setTavernStatuses(prev => {
-            const existing = prev.find(s => s.friendId === fid)
+            const existing = prev.find(s => s.friend.playerId === friend.playerId)
             if (existing) {
-              return prev.map(s => s.friendId === fid ? { ...s, status: 'scanning', lastScan: new Date().toLocaleTimeString('zh-CN') } : s)
+              return prev.map(s => s.friend.playerId === friend.playerId ? { ...s, status: 'scanning', lastScan: new Date().toLocaleTimeString('zh-CN') } : s)
             }
-            return [...prev, { friendId: fid, status: 'scanning', candidates: [], lastScan: new Date().toLocaleTimeString('zh-CN') }]
+            return [...prev, { friend, status: 'scanning', candidates: [], lastScan: new Date().toLocaleTimeString('zh-CN') }]
           })
 
           setTimeout(() => {
@@ -97,7 +102,7 @@ export default function App() {
             })
 
             setTavernStatuses(prev => prev.map(s =>
-              s.friendId === fid ? { ...s, status: 'done', candidates, lastScan: new Date().toLocaleTimeString('zh-CN') } : s
+              s.friend.playerId === friend.playerId ? { ...s, status: 'done', candidates, lastScan: new Date().toLocaleTimeString('zh-CN') } : s
             ))
 
             setStats(prev => ({ ...prev, totalScanned: prev.totalScanned + 1 }))

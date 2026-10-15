@@ -1,4 +1,5 @@
-import type { Config } from '../types'
+import { useState, useCallback } from 'react'
+import type { Config, FriendInfo, PlayerSearchResult } from '../types'
 
 interface Props {
   config: Config
@@ -6,22 +7,13 @@ interface Props {
 }
 
 export default function ConfigPanel({ config, setConfig }: Props) {
-  const updateField = (field: keyof Config, value: string | string[] | number) => {
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<PlayerSearchResult[]>([])
+  const [isSearching, setIsSearching] = useState(false)
+  const [searchError, setSearchError] = useState('')
+
+  const updateField = (field: keyof Config, value: string | string[] | number | FriendInfo[]) => {
     setConfig({ ...config, [field]: value })
-  }
-
-  const addFriendId = () => {
-    setConfig({ ...config, friendIds: [...config.friendIds, ''] })
-  }
-
-  const removeFriendId = (index: number) => {
-    setConfig({ ...config, friendIds: config.friendIds.filter((_, i) => i !== index) })
-  }
-
-  const updateFriendId = (index: number, value: string) => {
-    const newIds = [...config.friendIds]
-    newIds[index] = value
-    setConfig({ ...config, friendIds: newIds })
   }
 
   const toggleQuality = (quality: string) => {
@@ -31,6 +23,105 @@ export default function ConfigPanel({ config, setConfig }: Props) {
     } else {
       updateField('targetQualities', [...current, quality])
     }
+  }
+
+  // 判断输入是否为纯数字
+  const isNumeric = (str: string) => /^\d+$/.test(str.trim())
+
+  // 模拟搜索（实际项目中应调用真实API）
+  const handleSearch = useCallback(async () => {
+    const query = searchQuery.trim()
+    if (!query) return
+
+    setIsSearching(true)
+    setSearchError('')
+    setSearchResults([])
+
+    try {
+      // 模拟API调用延迟
+      await new Promise(resolve => setTimeout(resolve, 500))
+
+      // 模拟搜索结果
+      // 实际实现中这里应该调用:
+      // GET /api/v1/player-search?type=SHORT_ID&query={query}&limit=20
+      // GET /api/v1/player-search?type=NAME&query={query}&limit=20
+      const mockResults: PlayerSearchResult[] = []
+
+      if (isNumeric(query)) {
+        // 纯数字 → 同时搜索短ID和昵称
+        mockResults.push({
+          playerId: 'mock-' + Date.now(),
+          shortId: query,
+          displayName: `玩家${query}`,
+          avatarKey: 'player.avatar.male.default',
+          level: Math.floor(Math.random() * 50) + 1,
+          commercialTier: Math.floor(Math.random() * 6),
+        })
+      } else {
+        // 包含文字 → 只搜索昵称
+        mockResults.push({
+          playerId: 'mock-' + Date.now(),
+          shortId: String(Math.floor(Math.random() * 900000) + 100000),
+          displayName: query,
+          avatarKey: 'player.avatar.male.default',
+          level: Math.floor(Math.random() * 50) + 1,
+          commercialTier: Math.floor(Math.random() * 6),
+        })
+      }
+
+      setSearchResults(mockResults)
+    } catch {
+      setSearchError('搜索失败，请检查网络或AccessToken')
+    } finally {
+      setIsSearching(false)
+    }
+  }, [searchQuery])
+
+  const addFriend = (player: PlayerSearchResult) => {
+    // 检查是否已添加
+    if (config.friends.some(f => f.playerId === player.playerId)) {
+      setSearchError('该好友已在列表中')
+      return
+    }
+
+    const newFriend: FriendInfo = {
+      playerId: player.playerId,
+      shortId: player.shortId,
+      displayName: player.displayName,
+      level: player.level,
+      avatarKey: player.avatarKey,
+    }
+
+    updateField('friends', [...config.friends, newFriend])
+    setSearchResults([])
+    setSearchQuery('')
+    setSearchError('')
+  }
+
+  const removeFriend = (playerId: string) => {
+    updateField('friends', config.friends.filter(f => f.playerId !== playerId))
+  }
+
+  // 手动添加（直接输入UUID的兜底方案）
+  const [showManualAdd, setShowManualAdd] = useState(false)
+  const [manualId, setManualId] = useState('')
+  const [manualName, setManualName] = useState('')
+  const [manualShortId, setManualShortId] = useState('')
+
+  const handleManualAdd = () => {
+    if (!manualId.trim()) return
+    const newFriend: FriendInfo = {
+      playerId: manualId.trim(),
+      shortId: manualShortId.trim() || 'N/A',
+      displayName: manualName.trim() || '未知玩家',
+      level: 0,
+    }
+    if (config.friends.some(f => f.playerId === newFriend.playerId)) return
+    updateField('friends', [...config.friends, newFriend])
+    setManualId('')
+    setManualName('')
+    setManualShortId('')
+    setShowManualAdd(false)
   }
 
   return (
@@ -125,43 +216,235 @@ export default function ConfigPanel({ config, setConfig }: Props) {
         <p className="text-xs text-slate-500 mt-2">仅巡查并招募被选中的品质武将</p>
       </div>
 
-      {/* Friend IDs */}
+      {/* Friend Search & List */}
       <div className="bg-white/5 rounded-xl border border-white/10 p-5 backdrop-blur-sm">
         <h3 className="text-base font-semibold text-amber-300 mb-4 flex items-center gap-2">
           <i className="fa-solid fa-users" />
-          好友ID列表
+          好友列表
+          <span className="ml-auto text-xs text-slate-400 font-normal">
+            已添加 {config.friends.length} 人
+          </span>
         </h3>
-        <div className="space-y-2 mb-3">
-          {config.friendIds.map((fid, index) => (
-            <div key={index} className="flex gap-2">
+
+        {/* Search Box */}
+        <div className="mb-4">
+          <label className="block text-xs text-slate-400 mb-1.5">
+            搜索好友（输入短ID或游戏昵称）
+          </label>
+          <div className="flex gap-2">
+            <div className="relative flex-1">
               <input
                 type="text"
-                value={fid}
-                onChange={e => updateFriendId(index, e.target.value)}
-                placeholder={`好友 ${index + 1} 的 UUID`}
-                className="flex-1 bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/30"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleSearch()}
+                placeholder="输入短ID(如100033)或昵称(如戏言)"
+                className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/30 pr-20"
               />
-              <button
-                onClick={() => removeFriendId(index)}
-                className="px-3 py-2 rounded-lg bg-red-500/20 text-red-300 border border-red-500/30 hover:bg-red-500/30 text-sm"
-              >
-                ✕
-              </button>
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-500">
+                {searchQuery && (isNumeric(searchQuery) ? '🔢 短ID+昵称' : '📝 昵称')}
+              </span>
             </div>
-          ))}
+            <button
+              onClick={handleSearch}
+              disabled={isSearching || !searchQuery.trim()}
+              className="px-4 py-2.5 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 text-sm font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+            >
+              {isSearching ? (
+                <span className="flex items-center gap-1.5">
+                  <i className="fa-solid fa-spinner fa-spin text-xs" />
+                  搜索中
+                </span>
+              ) : (
+                <span className="flex items-center gap-1.5">
+                  <i className="fa-solid fa-magnifying-glass text-xs" />
+                  搜索
+                </span>
+              )}
+            </button>
+          </div>
+
+          {/* Search hint */}
+          <div className="mt-2 flex items-start gap-2 text-xs text-slate-500">
+            <i className="fa-solid fa-circle-info text-blue-400 mt-0.5" />
+            <div>
+              <p>
+                <strong className="text-slate-400">纯数字</strong>（如100033）→ 同时搜索短ID和昵称（因为昵称也可能是数字）
+              </p>
+              <p>
+                <strong className="text-slate-400">含文字</strong>（如戏言）→ 仅搜索昵称
+              </p>
+            </div>
+          </div>
         </div>
-        <button
-          onClick={addFriendId}
-          className="px-4 py-2 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 text-sm transition-all"
-        >
-          + 添加好友ID
-        </button>
-        <div className="mt-3 p-3 bg-amber-500/5 border border-amber-500/20 rounded-lg">
-          <p className="text-xs text-amber-300/80">
-            💡 <strong>提示：</strong>好友ID可以从抓包中获取。访问好友酒馆时URL中的UUID就是好友ID，例如：
-            <code className="bg-black/30 px-1.5 py-0.5 rounded mx-1 text-amber-200">
-              /friend-cities/d15f3677-67fc-4074-92c1-5aede87bb491/tavern
+
+        {/* Search Error */}
+        {searchError && (
+          <div className="mb-3 px-3 py-2 bg-red-500/10 border border-red-500/20 rounded-lg text-xs text-red-300">
+            {searchError}
+          </div>
+        )}
+
+        {/* Search Results */}
+        {searchResults.length > 0 && (
+          <div className="mb-4 bg-black/20 rounded-lg border border-white/5 overflow-hidden">
+            <div className="px-3 py-2 bg-white/5 border-b border-white/5 text-xs text-slate-400">
+              搜索结果 ({searchResults.length})
+            </div>
+            <div className="divide-y divide-white/5">
+              {searchResults.map(player => {
+                const alreadyAdded = config.friends.some(f => f.playerId === player.playerId)
+                return (
+                  <div key={player.playerId} className="px-3 py-2.5 flex items-center gap-3">
+                    {/* Avatar */}
+                    <div className="w-9 h-9 rounded-full bg-gradient-to-br from-amber-500/30 to-orange-600/30 border border-amber-500/20 flex items-center justify-center text-sm font-bold text-amber-300 shrink-0">
+                      {player.displayName.charAt(0)}
+                    </div>
+                    {/* Info */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-white truncate">{player.displayName}</span>
+                        <span className="text-xs text-slate-500">Lv.{player.level}</span>
+                      </div>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <span className="text-xs text-slate-400 font-mono">ID: {player.shortId}</span>
+                        <span className="text-xs text-slate-600">·</span>
+                        <span className="text-xs text-slate-500 font-mono truncate max-w-[120px]">
+                          {player.playerId.substring(0, 8)}...
+                        </span>
+                      </div>
+                    </div>
+                    {/* Add Button */}
+                    <button
+                      onClick={() => addFriend(player)}
+                      disabled={alreadyAdded}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all shrink-0 ${
+                        alreadyAdded
+                          ? 'bg-slate-500/10 text-slate-500 border border-slate-500/20 cursor-not-allowed'
+                          : 'bg-green-500/20 text-green-300 border border-green-500/30 hover:bg-green-500/30'
+                      }`}
+                    >
+                      {alreadyAdded ? '已添加' : '+ 添加'}
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Added Friends List */}
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-slate-400">已添加的好友</span>
+            <button
+              onClick={() => setShowManualAdd(!showManualAdd)}
+              className="text-xs text-slate-500 hover:text-amber-300 transition-colors flex items-center gap-1"
+            >
+              <i className="fa-solid fa-pen-to-square" />
+              手动添加UUID
+            </button>
+          </div>
+
+          {/* Manual Add Form */}
+          {showManualAdd && (
+            <div className="mb-3 p-3 bg-amber-500/5 border border-amber-500/20 rounded-lg space-y-2">
+              <input
+                type="text"
+                value={manualId}
+                onChange={e => setManualId(e.target.value)}
+                placeholder="内部UUID (如 d15f3677-67fc-4074-92c1-5aede87bb491)"
+                className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-amber-500/50"
+              />
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={manualName}
+                  onChange={e => setManualName(e.target.value)}
+                  placeholder="昵称 (可选)"
+                  className="flex-1 bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-amber-500/50"
+                />
+                <input
+                  type="text"
+                  value={manualShortId}
+                  onChange={e => setManualShortId(e.target.value)}
+                  placeholder="短ID (可选)"
+                  className="flex-1 bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-amber-500/50"
+                />
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleManualAdd}
+                  disabled={!manualId.trim()}
+                  className="px-3 py-1.5 rounded-lg text-xs bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 disabled:opacity-40"
+                >
+                  确认添加
+                </button>
+                <button
+                  onClick={() => setShowManualAdd(false)}
+                  className="px-3 py-1.5 rounded-lg text-xs bg-slate-500/20 text-slate-300 border border-slate-500/30 hover:bg-slate-500/30"
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          )}
+
+          {config.friends.length === 0 ? (
+            <div className="text-center py-6 text-slate-500">
+              <i className="fa-solid fa-user-plus text-2xl mb-2 opacity-30" />
+              <p className="text-xs">还没有添加好友，请在上方搜索并添加</p>
+            </div>
+          ) : (
+            <div className="space-y-1.5 max-h-64 overflow-y-auto">
+              {config.friends.map(friend => (
+                <div
+                  key={friend.playerId}
+                  className="flex items-center gap-3 px-3 py-2 bg-black/20 rounded-lg border border-white/5 group hover:border-white/10 transition-all"
+                >
+                  {/* Avatar */}
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-amber-500/20 to-orange-600/20 border border-amber-500/10 flex items-center justify-center text-xs font-bold text-amber-300 shrink-0">
+                    {friend.displayName.charAt(0)}
+                  </div>
+                  {/* Info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-white font-medium truncate">{friend.displayName}</span>
+                      {friend.level > 0 && (
+                        <span className="text-xs text-slate-500">Lv.{friend.level}</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className="text-xs text-amber-400/70 font-mono">#{friend.shortId}</span>
+                      <span className="text-xs text-slate-600">·</span>
+                      <span className="text-xs text-slate-500 font-mono truncate">
+                        {friend.playerId.substring(0, 8)}...
+                      </span>
+                    </div>
+                  </div>
+                  {/* Remove Button */}
+                  <button
+                    onClick={() => removeFriend(friend.playerId)}
+                    className="px-2 py-1 rounded text-xs text-red-400/60 hover:text-red-400 hover:bg-red-500/10 opacity-0 group-hover:opacity-100 transition-all"
+                    title="移除"
+                  >
+                    <i className="fa-solid fa-xmark" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* API Info */}
+        <div className="mt-4 p-3 bg-blue-500/5 border border-blue-500/20 rounded-lg">
+          <p className="text-xs text-blue-300/80">
+            💡 <strong>搜索API：</strong>
+            <code className="bg-black/30 px-1.5 py-0.5 rounded mx-1 text-blue-200">
+              GET /api/v1/player-search?type=SHORT_ID|NAME&query=xxx&limit=20
             </code>
+            <br />
+            搜索结果中的 <code className="bg-black/30 px-1 py-0.5 rounded text-blue-200">playerId</code> 即为内部UUID，用于访问好友酒馆。
           </p>
         </div>
       </div>

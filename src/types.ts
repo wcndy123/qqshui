@@ -5,8 +5,25 @@ export interface Config {
   serverId: string
   targetQualities: string[]
   intervalSeconds: number
-  friendIds: string[]
+  friends: FriendInfo[]
   accessToken: string
+}
+
+export interface FriendInfo {
+  playerId: string
+  shortId: string
+  displayName: string
+  level: number
+  avatarKey?: string
+}
+
+export interface PlayerSearchResult {
+  playerId: string
+  shortId: string
+  displayName: string
+  avatarKey: string
+  level: number
+  commercialTier: number
 }
 
 export interface LogEntry {
@@ -24,7 +41,7 @@ export interface HeroCandidate {
 }
 
 export interface FriendTavernStatus {
-  friendId: string
+  friend: FriendInfo
   status: 'pending' | 'scanning' | 'done' | 'error'
   candidates: HeroCandidate[]
   lastScan: string

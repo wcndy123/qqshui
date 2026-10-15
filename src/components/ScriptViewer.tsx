@@ -15,11 +15,11 @@ SERVER_ID = "recharge-s1"
 # 目标品质: WHITE, BLUE, PURPLE, ORANGE
 TARGET_QUALITIES = ["PURPLE", "ORANGE"]
 
-# 好友ID列表 (从抓包中获取)
-FRIEND_IDS = [
-    "d15f3677-67fc-4074-92c1-5aede87bb491",
-    "616593b2-9544-49cb-9bde-20fbe5372c29",
-    # 添加更多好友ID...
+# 好友列表 (短ID或昵称，脚本会自动搜索转换为内部UUID)
+FRIEND_QUERIES = [
+    "100033",      # 短ID
+    "戏言",        # 昵称
+    # 添加更多好友的短ID或昵称...
 ]
 
 # 巡查间隔 (秒)
@@ -76,24 +76,65 @@ def login_and_enter():
     return True
 
 
-def get_friend_list():
-    """步骤 2：获取好友列表"""
-    try:
-        res = session.get(f"{BASE_URL}/api/v1/friends").json()
-        if res.get("code") == "OK":
-            friends = res["data"].get("friends", [])
-            friend_ids = [
-                f.get("friendId") or f.get("id") or f.get("playerId")
-                for f in friends
-            ]
-            print(f"[*] 动态获取到 {len(friend_ids)} 个好友")
-            return [fid for fid in friend_ids if fid]
-    except Exception as e:
-        print(f"[!] 动态获取好友列表失败: {e}")
+def search_player(query):
+    """通过短ID或昵称搜索玩家，返回内部playerId"""
+    results = []
+    is_numeric = query.strip().isdigit()
     
-    # 兜底：使用手动配置的好友ID
-    print(f"[*] 使用手动配置的好友列表 ({len(FRIEND_IDS)} 人)")
-    return FRIEND_IDS
+    if is_numeric:
+        # 纯数字 → 同时搜索短ID和昵称（昵称也可能是纯数字）
+        for search_type in ["SHORT_ID", "NAME"]:
+            try:
+                res = session.get(
+                    f"{BASE_URL}/api/v1/player-search",
+                    params={"type": search_type, "query": query, "limit": 20}
+                ).json()
+                if res.get("code") == "OK":
+                    for p in res["data"].get("players", []):
+                        if p["playerId"] not in [r["playerId"] for r in results]:
+                            results.append(p)
+            except Exception:
+                pass
+    else:
+        # 含文字 → 只搜索昵称
+        try:
+            res = session.get(
+                f"{BASE_URL}/api/v1/player-search",
+                params={"type": "NAME", "query": query, "limit": 20}
+            ).json()
+            if res.get("code") == "OK":
+                results = res["data"].get("players", [])
+        except Exception:
+            pass
+    
+    return results
+
+
+def get_friend_list():
+    """步骤 2：通过短ID/昵称搜索获取好友的内部playerId列表"""
+    friend_ids = []
+    
+    for query in FRIEND_QUERIES:
+        print(f"[*] 搜索好友: {query}")
+        players = search_player(query)
+        
+        if players:
+            for p in players:
+                pid = p["playerId"]
+                name = p.get("displayName", "?")
+                sid = p.get("shortId", "?")
+                print(f"    → 找到: {name} (ID:{sid}, UUID:{pid[:8]}...)")
+                if pid not in friend_ids:
+                    friend_ids.append(pid)
+        else:
+            print(f"    → 未找到匹配的玩家")
+    
+    if friend_ids:
+        print(f"[*] 共解析到 {len(friend_ids)} 个好友")
+    else:
+        print("[!] 没有成功解析到任何好友")
+    
+    return friend_ids
 
 
 def inspect_friend_tavern(friend_id):
@@ -314,7 +355,7 @@ export default function ScriptViewer() {
           </div>
           <div className="flex gap-2">
             <span className="text-amber-400 font-bold shrink-0">3.</span>
-            <p>在 FRIEND_IDS 列表中填入你要巡查的好友UUID</p>
+            <p>在 FRIEND_QUERIES 列表中填入好友的短ID或游戏昵称</p>
           </div>
           <div className="flex gap-2">
             <span className="text-amber-400 font-bold shrink-0">4.</span>

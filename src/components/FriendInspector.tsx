@@ -42,10 +42,20 @@ export default function FriendInspector({ statuses }: Props) {
         {statuses.map((status, idx) => (
           <div key={idx} className="bg-black/20 rounded-lg p-2.5 border border-white/5">
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-xs text-slate-300 font-mono truncate max-w-[140px]">
-                {status.friendId.substring(0, 8)}...
-              </span>
-              <span className={`text-xs px-1.5 py-0.5 rounded ${
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-6 h-6 rounded-full bg-gradient-to-br from-amber-500/20 to-orange-600/20 border border-amber-500/10 flex items-center justify-center text-xs font-bold text-amber-300 shrink-0">
+                  {status.friend.displayName.charAt(0)}
+                </div>
+                <div className="min-w-0">
+                  <span className="text-xs text-white font-medium truncate block">
+                    {status.friend.displayName}
+                  </span>
+                  <span className="text-xs text-amber-400/60 font-mono">
+                    #{status.friend.shortId}
+                  </span>
+                </div>
+              </div>
+              <span className={`text-xs px-1.5 py-0.5 rounded shrink-0 ${
                 status.status === 'scanning' ? 'bg-blue-500/20 text-blue-300' :
                 status.status === 'done' ? 'bg-green-500/20 text-green-300' :
                 status.status === 'error' ? 'bg-red-500/20 text-red-300' :
