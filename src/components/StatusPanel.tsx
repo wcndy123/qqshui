@@ -3,6 +3,7 @@ interface Props {
     totalScanned: number
     totalRecruited: number
     totalSkipped: number
+    totalSnipeAttempts: number
   }
   currentStep: string
 }
@@ -12,6 +13,7 @@ const stepLabels: Record<string, string> = {
   login: '🔐 正在登录...',
   friends: '📋 获取好友列表...',
   patrol: '🔍 巡查中...',
+  sniping: '⚡ 抢招模式!',
   waiting: '⏳ 等待下一轮...',
 }
 
@@ -19,6 +21,7 @@ export default function StatusPanel({ stats, currentStep }: Props) {
   const statCards = [
     { label: '已巡查', value: stats.totalScanned, icon: '🔍', color: 'from-blue-500/20 to-blue-600/10 border-blue-500/30' },
     { label: '已招募', value: stats.totalRecruited, icon: '🏆', color: 'from-green-500/20 to-green-600/10 border-green-500/30' },
+    { label: '抢招次数', value: stats.totalSnipeAttempts, icon: '⚡', color: 'from-red-500/20 to-red-600/10 border-red-500/30' },
     { label: '已跳过', value: stats.totalSkipped, icon: '⏭', color: 'from-slate-500/20 to-slate-600/10 border-slate-500/30' },
   ]
 
@@ -32,13 +35,13 @@ export default function StatusPanel({ stats, currentStep }: Props) {
       {/* Current Step */}
       <div className="mb-3 px-3 py-2 bg-black/20 rounded-lg border border-white/5">
         <p className="text-xs text-slate-400">当前状态</p>
-        <p className="text-sm font-medium text-amber-300">
+        <p className={`text-sm font-medium ${currentStep === 'sniping' ? 'text-red-300 animate-pulse' : 'text-amber-300'}`}>
           {stepLabels[currentStep] || '处理中...'}
         </p>
       </div>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2">
         {statCards.map(card => (
           <div
             key={card.label}

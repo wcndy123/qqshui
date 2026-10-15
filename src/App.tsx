@@ -5,7 +5,8 @@ import StatusPanel from './components/StatusPanel'
 import FlowDiagram from './components/FlowDiagram'
 import ScriptViewer from './components/ScriptViewer'
 import FriendInspector from './components/FriendInspector'
-import type { Config, LogEntry, FriendTavernStatus } from './types'
+import SnipePanel from './components/SnipePanel'
+import type { Config, LogEntry, FriendTavernStatus, TavernCandidate, SnipeState } from './types'
 
 const DEFAULT_CONFIG: Config = {
   phoneNumber: '',
@@ -16,6 +17,13 @@ const DEFAULT_CONFIG: Config = {
   intervalSeconds: 60,
   friends: [],
   accessToken: '',
+  snipeConfig: {
+    advanceMs: 50,
+    maxRetries: 3,
+    retryIntervalMs: 200,
+    preQuerySeconds: 5,
+    autoSnipe: true,
+  },
 }
 
 export default function App() {
@@ -24,15 +32,16 @@ export default function App() {
   const [isRunning, setIsRunning] = useState(false)
   const [currentStep, setCurrentStep] = useState<string>('idle')
   const [tavernStatuses, setTavernStatuses] = useState<FriendTavernStatus[]>([])
-  const [stats, setStats] = useState({ totalScanned: 0, totalRecruited: 0, totalSkipped: 0 })
+  const [stats, setStats] = useState({ totalScanned: 0, totalRecruited: 0, totalSkipped: 0, totalSnipeAttempts: 0 })
   const [activeTab, setActiveTab] = useState<'dashboard' | 'config' | 'script' | 'flow'>('dashboard')
+  const [serverOffset, setServerOffset] = useState(0) // 服务器时间偏移(ms)
   const intervalRef = useRef<number | null>(null)
   const logEndRef = useRef<HTMLDivElement>(null!)
 
   const addLog = useCallback((message: string, type: LogEntry['type'] = 'info') => {
     setLogs(prev => [...prev, {
       id: Date.now() + Math.random(),
-      timestamp: new Date().toLocaleTimeString('zh-CN'),
+      timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false, fractionalSecondDigits: 3 } as any),
       message,
       type,
     }])
@@ -42,109 +51,290 @@ export default function App() {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [logs])
 
-  const simulatePatrol = useCallback(() => {
+  // 模拟服务器时间校准
+  const calibrateTime = useCallback(() => {
+    const serverTime = Date.now() + (Math.random() * 40 - 20) // 模拟±20ms偏差
+    const offset = serverTime - Date.now()
+    setServerOffset(offset)
+    return offset
+  }, [])
+
+  // 模拟巡查一个好友酒馆
+  const simulateInspect = useCallback((friendId: string) => {
+    const qualities = ['WHITE', 'BLUE', 'PURPLE', 'ORANGE']
+    const heroNames = ['阮小七', '孙新', '李逵', '武松', '林冲', '鲁智深', '宋江', '吴用', '公孙胜', '关胜']
+    const numHeroes = Math.floor(Math.random() * 3) + 1
+
+    const candidates: TavernCandidate[] = Array.from({ length: numHeroes }, (_, i) => {
+      const q = qualities[Math.floor(Math.random() * qualities.length)]
+      return {
+        candidateId: `cand-${Date.now()}-${i}`,
+        name: heroNames[Math.floor(Math.random() * heroNames.length)],
+        quality: q,
+        star: Math.floor(Math.random() * 5) + 1,
+        version: Math.floor(Math.random() * 3),
+        available: Math.random() > 0.4,
+        copperCost: Math.floor(Math.random() * 5000) + 500,
+        unavailableReason: Math.random() > 0.5 ? 'CANDIDATE_PROTECTED' : undefined,
+      }
+    })
+
+    // 模拟保护期：随机在未来0~30分钟内
+    const now = Date.now()
+    const protectionDuration = Math.floor(Math.random() * 30 * 60 * 1000)
+    const protectionEndsAt = new Date(now + protectionDuration).toISOString()
+
+    return { candidates, protectionEndsAt }
+  }, [])
+
+  // 抢招核心逻辑
+  const executeSnipe = useCallback(async (
+    friendId: string,
+    candidate: TavernCandidate,
+    protectionEndsAt: string,
+  ) => {
+    const { advanceMs, maxRetries, retryIntervalMs } = config.snipeConfig
+    const protectEnd = new Date(protectionEndsAt).getTime()
+    const now = Date.now() + serverOffset
+    const timeUntilProtectEnd = protectEnd - now
+
+    const snipeState: SnipeState = {
+      phase: 'watching',
+      targetHero: candidate.name,
+      countdown: Math.ceil(timeUntilProtectEnd / 1000),
+      serverOffset,
+      attempts: 0,
+    }
+
+    // 更新状态为 watching
+    setTavernStatuses(prev => prev.map(s =>
+      s.friend.playerId === friendId
+        ? { ...s, status: 'watching' as const, snipeState }
+        : s
+    ))
+
+    addLog(`👁 开始监控【${candidate.name}】${candidate.quality === 'ORANGE' ? '🟠橙' : '🟣紫'}${candidate.star}星`, 'info')
+    addLog(`  保护期剩余: ${Math.ceil(timeUntilProtectEnd / 1000)}秒 | 服务器偏移: ${serverOffset.toFixed(1)}ms`, 'info')
+
+    // 阶段1：等待到预查询时间
+    const preQueryMs = config.snipeConfig.preQuerySeconds * 1000
+    const waitUntilPreQuery = timeUntilProtectEnd - preQueryMs
+
+    if (waitUntilPreQuery > 0) {
+      addLog(`  ⏳ 等待${config.snipeConfig.preQuerySeconds}秒后预查询...`, 'info')
+      await sleep(waitUntilPreQuery)
+    }
+
+    // 阶段2：预查询（获取最新candidateId和version）
+    setTavernStatuses(prev => prev.map(s =>
+      s.friend.playerId === friendId
+        ? { ...s, snipeState: { ...snipeState, phase: 'preparing' } }
+        : s
+    ))
+    addLog(`  🔍 预查询获取最新数据...`, 'info')
+    await sleep(200) // 模拟请求延迟
+
+    // 阶段3：等待到发射时间
+    const fireTime = protectEnd - advanceMs // 提前 advanceMs 发起
+    const currentTime = Date.now() + serverOffset
+    const waitUntilFire = fireTime - currentTime
+
+    setTavernStatuses(prev => prev.map(s =>
+      s.friend.playerId === friendId
+        ? { ...s, snipeState: { ...snipeState, phase: 'ready', countdown: Math.ceil(waitUntilFire / 1000) } }
+        : s
+    ))
+
+    if (waitUntilFire > 0) {
+      addLog(`  🎯 准备就绪，${(waitUntilFire / 1000).toFixed(2)}秒后发射 (提前${advanceMs}ms补偿网络延迟)`, 'warning')
+      await sleep(waitUntilFire)
+    }
+
+    // 阶段4：发射！
+    let attempt = 0
+    let success = false
+
+    while (attempt < maxRetries && !success) {
+      attempt++
+      const firedAt = new Date().toISOString()
+
+      setTavernStatuses(prev => prev.map(s =>
+        s.friend.playerId === friendId
+          ? { ...s, status: 'sniping' as const, snipeState: { ...snipeState, phase: 'firing', attempts: attempt, firedAt } }
+          : s
+      ))
+
+      setStats(prev => ({ ...prev, totalSnipeAttempts: prev.totalSnipeAttempts + 1 }))
+      addLog(`  ⚡ 第${attempt}次发射！[${new Date().toLocaleTimeString('zh-CN', { hour12: false } as any)}.${String(new Date().getMilliseconds()).padStart(3, '0')}]`, 'warning')
+
+      // 模拟请求
+      await sleep(30 + Math.random() * 50) // 模拟网络延迟30-80ms
+
+      // 模拟结果
+      const rand = Math.random()
+      if (attempt === 1 && rand > 0.3) {
+        // 第一次就有70%概率成功
+        success = true
+      } else if (attempt === 2 && rand > 0.2) {
+        success = true
+      } else if (attempt >= 3 && rand > 0.5) {
+        success = true
+      }
+
+      if (success) {
+        setTavernStatuses(prev => prev.map(s =>
+          s.friend.playerId === friendId
+            ? { ...s, status: 'sniped' as const, snipeState: { ...snipeState, phase: 'success', attempts: attempt, lastResult: '招募成功！' } }
+            : s
+        ))
+        addLog(`  ✅ 成功偷取【${candidate.name}】！第${attempt}次尝试 | 花费铜钱: ${candidate.copperCost}`, 'success')
+        setStats(prev => ({ ...prev, totalRecruited: prev.totalRecruited + 1 }))
+        return true
+      } else {
+        const failReason = attempt === 1 ? '保护期未结束' : '已被他人抢先'
+        addLog(`  ❌ 第${attempt}次失败: ${failReason}`, 'error')
+
+        if (attempt < maxRetries) {
+          await sleep(retryIntervalMs)
+        }
+      }
+    }
+
+    // 全部失败
+    setTavernStatuses(prev => prev.map(s =>
+      s.friend.playerId === friendId
+        ? { ...s, status: 'done' as const, snipeState: { ...snipeState, phase: 'failed', attempts: attempt, lastResult: '抢招失败' } }
+        : s
+    ))
+    addLog(`  💀 抢招失败，已尝试${attempt}次`, 'error')
+    return false
+  }, [config.snipeConfig, serverOffset, addLog])
+
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+  // 主巡查循环
+  const patrolLoop = useCallback(async () => {
     if (!isRunning) return
 
     setCurrentStep('login')
-    addLog('正在登录服务器...', 'info')
+    addLog('🔐 正在校准服务器时间...', 'info')
+    const offset = calibrateTime()
+    addLog(`  服务器时间偏移: ${offset.toFixed(1)}ms`, 'info')
 
-    setTimeout(() => {
-      if (!config.accessToken) {
-        addLog('❌ 未配置 AccessToken，请先在配置面板填入！', 'error')
-        setCurrentStep('idle')
-        return
-      }
-      addLog('✅ 登录成功，获取好友列表...', 'success')
-      setCurrentStep('friends')
+    await sleep(300)
+    setCurrentStep('patrol')
 
-      setTimeout(() => {
-        const friends = config.friends.length > 0 ? config.friends : []
-        if (friends.length === 0) {
-          addLog('❌ 未配置好友！请先在配置面板搜索并添加好友', 'error')
-          setCurrentStep('idle')
-          return
+    const friends = config.friends
+    if (friends.length === 0) {
+      addLog('❌ 未配置好友！请先在配置面板搜索并添加好友', 'error')
+      setCurrentStep('idle')
+      return
+    }
+
+    addLog(`\n📋 开始巡查 ${friends.length} 个好友的酒馆`, 'info')
+
+    // 阶段1：慢轮询发现目标
+    const targets: { friend: typeof friends[0], candidate: TavernCandidate, protectionEndsAt: string }[] = []
+
+    for (let i = 0; i < friends.length; i++) {
+      if (!isRunning) return
+      const friend = friends[i]
+      addLog(`\n[${i + 1}/${friends.length}] 🔍 巡查【${friend.displayName}】(#${friend.shortId})`, 'info')
+
+      setTavernStatuses(prev => {
+        const existing = prev.find(s => s.friend.playerId === friend.playerId)
+        if (existing) {
+          return prev.map(s => s.friend.playerId === friend.playerId ? { ...s, status: 'scanning' as const, lastScan: new Date().toLocaleTimeString('zh-CN') } : s)
         }
-        addLog(`📋 共 ${friends.length} 个好友待巡查`, 'info')
-        setCurrentStep('patrol')
+        return [...prev, { friend, status: 'scanning' as const, candidates: [], lastScan: new Date().toLocaleTimeString('zh-CN') }]
+      })
 
-        let friendIndex = 0
-        const patrolNext = () => {
-          if (!isRunning || friendIndex >= friends.length) {
-            addLog(`🔄 本轮巡查结束，${config.intervalSeconds}秒后开始下一轮...`, 'info')
-            setCurrentStep('waiting')
-            return
-          }
+      await sleep(300) // 模拟请求延迟
 
-          const friend = friends[friendIndex]
-          addLog(`🔍 巡查好友【${friend.displayName}】(ID:${friend.shortId}) 的酒馆...`, 'info')
+      const { candidates, protectionEndsAt } = simulateInspect(friend.playerId)
 
-          setTavernStatuses(prev => {
-            const existing = prev.find(s => s.friend.playerId === friend.playerId)
-            if (existing) {
-              return prev.map(s => s.friend.playerId === friend.playerId ? { ...s, status: 'scanning', lastScan: new Date().toLocaleTimeString('zh-CN') } : s)
-            }
-            return [...prev, { friend, status: 'scanning', candidates: [], lastScan: new Date().toLocaleTimeString('zh-CN') }]
+      setTavernStatuses(prev => prev.map(s =>
+        s.friend.playerId === friend.playerId
+          ? { ...s, status: 'done' as const, candidates, protectionEndsAt, lastScan: new Date().toLocaleTimeString('zh-CN') }
+          : s
+      ))
+
+      setStats(prev => ({ ...prev, totalScanned: prev.totalScanned + 1 }))
+
+      // 检查是否有保护期内的目标品质武将
+      const protectEndTime = new Date(protectionEndsAt).getTime()
+      const now = Date.now() + serverOffset
+      const isProtected = protectEndTime > now
+
+      const targetCandidates = candidates.filter(c =>
+        config.targetQualities.includes(c.quality)
+      )
+
+      if (targetCandidates.length > 0) {
+        if (isProtected) {
+          const remainSec = Math.ceil((protectEndTime - now) / 1000)
+          addLog(`  🔥 发现目标！但保护期内(剩余${remainSec}秒)`, 'warning')
+          targetCandidates.forEach(c => {
+            addLog(`    ${c.quality === 'ORANGE' ? '🟠' : '🟣'}【${c.name}】${c.star}星 - 等待保护期结束`, 'warning')
           })
 
-          setTimeout(() => {
-            // Simulate finding heroes
-            const qualities = ['WHITE', 'BLUE', 'PURPLE', 'ORANGE']
-            const heroNames = ['阮小七', '孙新', '李逵', '武松', '林冲', '鲁智深', '宋江', '吴用', '公孙胜', '关胜']
-            const numHeroes = Math.floor(Math.random() * 3) + 1
-            const candidates = Array.from({ length: numHeroes }, () => {
-              const q = qualities[Math.floor(Math.random() * qualities.length)]
-              return {
-                name: heroNames[Math.floor(Math.random() * heroNames.length)],
-                quality: q,
-                star: Math.floor(Math.random() * 5) + 1,
-                available: Math.random() > 0.4,
-              }
-            })
-
-            setTavernStatuses(prev => prev.map(s =>
-              s.friend.playerId === friend.playerId ? { ...s, status: 'done', candidates, lastScan: new Date().toLocaleTimeString('zh-CN') } : s
-            ))
-
-            setStats(prev => ({ ...prev, totalScanned: prev.totalScanned + 1 }))
-
-            const targets = candidates.filter(c =>
-              config.targetQualities.includes(c.quality) && c.available
-            )
-
-            if (targets.length > 0) {
-              targets.forEach(t => {
-                addLog(`🔥 发现目标武将！【${t.name}】| ${t.quality === 'ORANGE' ? '🟠橙色' : '🟣紫色'} ${t.star}星`, 'success')
-                addLog(`  → 正在执行秒招募...`, 'info')
-
-                setTimeout(() => {
-                  addLog(`  ✅ 成功偷取【${t.name}】！花费铜钱: ${Math.floor(Math.random() * 5000) + 1000}`, 'success')
-                  setStats(prev => ({ ...prev, totalRecruited: prev.totalRecruited + 1 }))
-                }, 300)
-              })
+          if (config.snipeConfig.autoSnipe) {
+            // 选择最高品质的目标
+            const best = targetCandidates.sort((a, b) => {
+              const qOrder = { ORANGE: 2, PURPLE: 1 }
+              return (qOrder[b.quality as keyof typeof qOrder] || 0) - (qOrder[a.quality as keyof typeof qOrder] || 0)
+            })[0]
+            targets.push({ friend, candidate: best, protectionEndsAt })
+          }
+        } else {
+          // 保护期已过，直接尝试招募
+          const available = targetCandidates.find(c => c.available)
+          if (available) {
+            addLog(`  🔥 发现可招募目标！立即抢招...`, 'success')
+            // 直接招募（无保护期）
+            await sleep(100)
+            const success = Math.random() > 0.5
+            if (success) {
+              addLog(`  ✅ 成功偷取【${available.name}】！`, 'success')
+              setStats(prev => ({ ...prev, totalRecruited: prev.totalRecruited + 1 }))
             } else {
-              const protectedOnes = candidates.filter(c => !c.available)
-              if (protectedOnes.length > 0) {
-                addLog(`  ⚠️ 该好友酒馆武将被保护中 (CANDIDATE_PROTECTED)`, 'warning')
-              } else {
-                addLog(`  无目标品质武将，跳过`, 'info')
-              }
-              setStats(prev => ({ ...prev, totalSkipped: prev.totalSkipped + 1 }))
+              addLog(`  ❌ 招募失败: 已被他人抢先`, 'error')
             }
-
-            friendIndex++
-            setTimeout(patrolNext, 1500)
-          }, 800)
+          } else {
+            addLog(`  目标武将被保护中，跳过`, 'info')
+          }
         }
+      } else {
+        addLog(`  无目标品质武将`, 'info')
+        setStats(prev => ({ ...prev, totalSkipped: prev.totalSkipped + 1 }))
+      }
 
-        patrolNext()
-      }, 500)
-    }, 600)
-  }, [isRunning, config, addLog])
+      await sleep(500) // 好友间间隔
+    }
+
+    // 阶段2：对需要等待保护期的目标执行抢招
+    if (targets.length > 0 && config.snipeConfig.autoSnipe) {
+      addLog(`\n🎯 发现 ${targets.length} 个待抢目标，进入抢招模式...`, 'warning')
+      setCurrentStep('sniping')
+
+      for (const target of targets) {
+        if (!isRunning) return
+        await executeSnipe(target.friend.playerId, target.candidate, target.protectionEndsAt)
+        await sleep(1000) // 目标间间隔
+      }
+    }
+
+    // 本轮结束
+    setCurrentStep('waiting')
+    addLog(`\n🔄 本轮巡查结束，${config.intervalSeconds}秒后开始下一轮...`, 'info')
+  }, [isRunning, config, serverOffset, calibrateTime, simulateInspect, executeSnipe, addLog])
 
   const handleStart = () => {
     setIsRunning(true)
     addLog('🚀 自动巡查系统启动！', 'success')
-    simulatePatrol()
+    addLog(`  抢招模式: ${config.snipeConfig.autoSnipe ? '✅ 开启' : '❌ 关闭'}`, 'info')
+    addLog(`  提前量: ${config.snipeConfig.advanceMs}ms | 最大重试: ${config.snipeConfig.maxRetries}次`, 'info')
+    patrolLoop()
   }
 
   const handleStop = () => {
@@ -159,7 +349,7 @@ export default function App() {
 
   const handleClearLogs = () => {
     setLogs([])
-    setStats({ totalScanned: 0, totalRecruited: 0, totalSkipped: 0 })
+    setStats({ totalScanned: 0, totalRecruited: 0, totalSkipped: 0, totalSnipeAttempts: 0 })
     setTavernStatuses([])
   }
 
@@ -183,14 +373,20 @@ export default function App() {
               <h1 className="text-lg font-bold bg-gradient-to-r from-amber-300 to-orange-400 bg-clip-text text-transparent">
                 好友酒馆自动巡查招募系统
               </h1>
-              <p className="text-xs text-slate-400">水浒Q传 · 全自动偷取高品质武将</p>
+              <p className="text-xs text-slate-400">水浒Q传 · 保护期倒计时 + 毫秒级抢招</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full ${isRunning ? 'bg-green-400 animate-pulse' : 'bg-slate-500'}`} />
-            <span className="text-sm text-slate-300">
-              {isRunning ? '运行中' : '已停止'}
-            </span>
+          <div className="flex items-center gap-3">
+            <div className="hidden sm:flex items-center gap-1.5 text-xs text-slate-400 bg-white/5 px-2 py-1 rounded">
+              <i className="fa-solid fa-clock text-amber-400" />
+              时间偏移: <span className="text-amber-300 font-mono">{serverOffset.toFixed(0)}ms</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${isRunning ? 'bg-green-400 animate-pulse' : 'bg-slate-500'}`} />
+              <span className="text-sm text-slate-300">
+                {isRunning ? '运行中' : '已停止'}
+              </span>
+            </div>
           </div>
         </div>
       </header>
@@ -220,7 +416,7 @@ export default function App() {
       <main className="max-w-7xl mx-auto px-4 py-6">
         {activeTab === 'dashboard' && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Left Column - Controls & Status */}
+            {/* Left Column */}
             <div className="lg:col-span-1 space-y-4">
               {/* Control Panel */}
               <div className="bg-white/5 rounded-xl border border-white/10 p-4 backdrop-blur-sm">
@@ -257,6 +453,9 @@ export default function App() {
 
               {/* Stats */}
               <StatusPanel stats={stats} currentStep={currentStep} />
+
+              {/* Snipe Panel */}
+              <SnipePanel statuses={tavernStatuses} />
 
               {/* Friend Tavern Statuses */}
               <FriendInspector statuses={tavernStatuses} />
