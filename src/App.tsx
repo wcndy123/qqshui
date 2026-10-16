@@ -6,6 +6,7 @@ import FlowDiagram from './components/FlowDiagram'
 import ScriptViewer from './components/ScriptViewer'
 import FriendInspector from './components/FriendInspector'
 import SnipePanel from './components/SnipePanel'
+import { syncServerOffset, waitUntilCalibratedTime, stopPreciseTimer } from './utils/timerWorker'
 import type { Config, LogEntry, FriendTavernStatus, TavernCandidate, SnipeState, FriendInfo, PlayerSearchResult } from './types'
 
 const BASE_URL = 'https://service.qjsh.top'
@@ -86,13 +87,14 @@ export default function App() {
 
       addLog(`[RESP] ${resp.status} code=${data.code || 'N/A'} (${latency.toFixed(0)}ms)`, data.code === 'OK' ? 'success' : 'error')
 
-      // 更新时间偏移
+      // 更新时间偏移（同步给高精度计时 Worker，保证 Worker 与主线程使用同一校准时间轴）
       if (data.data?.serverTime) {
         const serverTime = new Date(data.data.serverTime).getTime()
         const localNow = Date.now()
         const offset = serverTime - localNow
         setServerOffset(offset)
         serverOffsetRef.current = offset
+        syncServerOffset(offset)
       }
 
       return { status: resp.status, data, latency }
@@ -221,6 +223,9 @@ export default function App() {
     } catch {
       addLog('[WARN] 时间校准失败，使用本地时间', 'warning')
     }
+    // 确保高精度计时 Worker 已创建并拿到最新偏移（Worker 后台计时不受标签页节流影响）
+    syncServerOffset(serverOffsetRef.current)
+    addLog('[INFO] 已同步时间偏移至高精度计时 Worker (后台标签页不节流)', 'info')
     addLog('', 'info')
 
     // ===== 阶段2: 巡查酒馆 =====
@@ -369,26 +374,40 @@ export default function App() {
     const snipeState: SnipeState = { phase: 'watching', targetHero: candidate.name, countdown: Math.ceil(remainingSec), serverOffset: serverOffsetRef.current, attempts: 0 }
     setTavernStatuses(prev => prev.map(s => s.friend.playerId === friend.playerId ? { ...s, status: 'watching' as const, snipeState } : s))
 
-    // 等待到预查询时间
+    // 等待到预查询时间（优先使用高精度计时 Worker，避免后台标签页节流导致倒计时不准）
     const preQueryWaitMs = remainingMs - (preQuerySeconds * 1000)
     if (preQueryWaitMs > 1000) {
       addLog(`[WAIT] 等待${preQuerySeconds}秒后预查询 (实际等待${(preQueryWaitMs / 1000).toFixed(1)}秒)...`, 'info')
-      // 分段等待，保持响应
-      const waitStart = Date.now()
-      while (Date.now() - waitStart < preQueryWaitMs - 100) {
-        if (!isRunningRef.current) return
-        const elapsed = Date.now() - waitStart
-        const remaining = preQueryWaitMs - elapsed
-        if (remaining > 5000) {
-          snipeState.countdown = Math.ceil(remaining / 1000)
-          setTavernStatuses(prev => prev.map(s => s.friend.playerId === friend.playerId ? { ...s, snipeState: { ...snipeState } } : s))
-          await sleep(Math.min(5000, remaining - 100))
-        } else {
-          await sleep(Math.max(50, remaining - 100))
+      const preTargetTime = Date.now() + serverOffsetRef.current + preQueryWaitMs
+      const firedByWorker = await waitUntilCalibratedTime(preTargetTime, {
+        shouldAbort: () => !isRunningRef.current,
+        onTick: (remaining) => {
+          if (remaining > 5000) {
+            snipeState.countdown = Math.ceil(remaining / 1000)
+            setTavernStatuses(prev => prev.map(s => s.friend.playerId === friend.playerId ? { ...s, snipeState: { ...snipeState } } : s))
+          }
+        },
+      })
+      if (!isRunningRef.current) return
+      if (!firedByWorker) {
+        // Worker 不可用或被中止 → 回退到主线程分段等待
+        addLog('[WARN] 计时 Worker 不可用，回退主线程等待', 'warning')
+        const waitStart = Date.now()
+        while (Date.now() - waitStart < preQueryWaitMs - 100) {
+          if (!isRunningRef.current) return
+          const elapsed = Date.now() - waitStart
+          const remaining = preQueryWaitMs - elapsed
+          if (remaining > 5000) {
+            snipeState.countdown = Math.ceil(remaining / 1000)
+            setTavernStatuses(prev => prev.map(s => s.friend.playerId === friend.playerId ? { ...s, snipeState: { ...snipeState } } : s))
+            await sleep(Math.min(5000, remaining - 100))
+          } else {
+            await sleep(Math.max(50, remaining - 100))
+          }
         }
+        // 忙等待最后100ms
+        while (Date.now() - waitStart < preQueryWaitMs) { /* busy wait */ }
       }
-      // 忙等待最后100ms
-      while (Date.now() - waitStart < preQueryWaitMs) { /* busy wait */ }
     }
 
     if (!isRunningRef.current) return
@@ -437,12 +456,24 @@ export default function App() {
 
     if (waitUntilFireMs > 0) {
       addLog(`[WAIT] 距离发射: ${(waitUntilFireMs / 1000).toFixed(3)}秒 (提前${advanceMs}ms)`, 'warning')
-      const fireWaitStart = Date.now()
-      while (Date.now() - fireWaitStart < waitUntilFireMs - 10) {
-        if (!isRunningRef.current) return
+      // 使用高精度计时 Worker 等待到发射时刻：
+      // 主线程 setTimeout/setInterval 在后台标签页会被节流到最低 1s/次，导致时间对比不准；
+      // Worker 内基于校准时间戳 + 末段忙等待，可保持毫秒级精度
+      const firedByWorker = await waitUntilCalibratedTime(fireTimeMs, {
+        shouldAbort: () => !isRunningRef.current,
+      })
+      if (!isRunningRef.current) return
+      if (!firedByWorker) {
+        // Worker 不可用 → 回退到主线程忙等待（尽力保证精度）
+        addLog('[WARN] 计时 Worker 不可用，回退主线程忙等待', 'warning')
+        const fireWaitStart = Date.now()
+        while (Date.now() - fireWaitStart < waitUntilFireMs - 10) {
+          if (!isRunningRef.current) return
+        }
+        while (Date.now() + serverOffsetRef.current < fireTimeMs) { /* busy wait */ }
+      } else {
+        addLog('[INFO] Worker 精确触发发射时刻', 'success')
       }
-      // 忙等待
-      while (Date.now() + serverOffsetRef.current < fireTimeMs) { /* busy wait */ }
     }
 
     if (!isRunningRef.current) return
@@ -498,6 +529,7 @@ export default function App() {
     setIsRunning(false)
     isRunningRef.current = false
     setCurrentStep('idle')
+    stopPreciseTimer() // 停止 Worker 中可能正在进行的倒计时
     addLog('⏹ 用户手动停止', 'warning')
   }
 
